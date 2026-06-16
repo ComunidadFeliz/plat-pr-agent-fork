@@ -1,1 +1,1 @@
-FROM pragent/pr-agent:github_action
+FROM pragent/pr-agent@sha256:0e0ab10b296d0d04df2049c51a27c3fc29b1a791f939a532a14f2b775316f6c5
