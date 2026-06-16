@@ -1,0 +1,53 @@
+name: Build & push image to ECR
+
+# Construye NUESTRA imagen del review (PR-Agent parcheado) con cache de capas
+# y la publica en ECR. Los runs del review luego solo bajan esta imagen.
+on:
+  push:
+    branches: [main]
+    paths:                       # solo rebuild si cambia lo que afecta la imagen
+      - 'pr_agent/**'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'Dockerfile.github_action'
+      - '.github/workflows/build-and-push-ecr.yaml'
+  workflow_dispatch:             # rebuild manual
+
+permissions:
+  id-token: write                # OIDC para asumir el rol de AWS (sin llaves estáticas)
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}            # Variable del repo, ej. us-east-1
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}    # Variable del repo, ej. plat-pr-agent
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}   # Variable del repo (el ARN no es secreto)
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push (con cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.github_action     # el que compila desde fuente (PR #2)
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
