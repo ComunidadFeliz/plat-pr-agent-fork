@@ -570,6 +570,25 @@ class LiteLLMAIHandler(BaseAiHandler):
             response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
             get_logger().debug("Full_response", artifact=response_log)
 
+            # Emit a compact per-call usage/cost event for the metrics collector.
+            # INFO level and prompt-free on purpose: the collector reads this line from
+            # the workflow logs and attributes it to the PR via the run (no pr_id needed
+            # here). Wrapped so a logging failure can never break the review.
+            try:
+                usage = getattr(response_obj, "usage", None)
+                get_logger().info("llm_usage", artifact={
+                    "event": "llm_usage",
+                    "model_requested": model,
+                    "model_responded": getattr(response_obj, "model", model),
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+                    "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+                    "cost_usd": litellm.completion_cost(completion_response=response_obj),
+                })
+            except Exception as e:
+                get_logger().warning(f"Could not emit llm_usage event: {e}")
+
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
