@@ -8,7 +8,7 @@ boto3==1.40.45
 certifi==2024.8.30
 dynaconf==3.2.4
 fastapi==0.118.0
-GitPython==3.1.41
+GitPython==3.1.50
 google-cloud-aiplatform==1.154.0
 google-cloud-storage==2.10.0
 protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
