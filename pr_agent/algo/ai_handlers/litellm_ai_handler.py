@@ -570,6 +570,37 @@ class LiteLLMAIHandler(BaseAiHandler):
             response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
             get_logger().debug("Full_response", artifact=response_log)
 
+            # Emit a compact per-call usage/cost event for the metrics collector.
+            # INFO level and prompt-free on purpose. Two independent channels, both
+            # best-effort so a failure can never break the review:
+            #   - stdout: the line is attributed to the PR via the run log.
+            #   - NDJSON file (when LLM_USAGE_FILE is set): one line appended per call,
+            #     so a later step in the SAME job can aggregate every call of the run
+            #     and push a single code_review.completed event.
+            try:
+                usage = getattr(response_obj, "usage", None)
+                usage_event = {
+                    "event": "llm_usage",
+                    "model_requested": model,
+                    "model_responded": getattr(response_obj, "model", model),
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+                    "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+                    "cost_usd": litellm.completion_cost(completion_response=response_obj),
+                }
+                get_logger().info("llm_usage", artifact=usage_event)
+
+                usage_file = os.getenv("LLM_USAGE_FILE")
+                if usage_file:
+                    try:
+                        with open(usage_file, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(usage_event) + "\n")
+                    except Exception as e:
+                        get_logger().warning(f"Could not append llm_usage to {usage_file}: {e}")
+            except Exception as e:
+                get_logger().warning(f"Could not emit llm_usage event: {e}")
+
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
