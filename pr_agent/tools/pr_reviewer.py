@@ -99,6 +99,7 @@ class PRReviewer:
             "related_tickets": get_settings().get('related_tickets', []),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
+            "repo_context": self._load_repo_context(),
         }
 
         self.token_handler = TokenHandler(
@@ -107,6 +108,35 @@ class PRReviewer:
             get_settings().pr_review_prompt.system,
             get_settings().pr_review_prompt.user
         )
+
+    def _load_repo_context(self) -> dict:
+        """Read project convention files from the repo to inject as review context."""
+        if not get_settings().pr_reviewer.get("load_repo_context", True):
+            return {}
+
+        branch = self.git_provider.get_pr_branch()
+        candidate_files = [
+            "CLAUDE.md",
+            ".claude/CLAUDE.md",
+            ".github/pull_request_template.md",
+            ".rubocop.yml",
+            ".eslintrc.js",
+            ".eslintrc.json",
+            ".eslintrc.yml",
+            "eslint.config.js",
+            "eslint.config.mjs",
+        ]
+        char_limit = get_settings().pr_reviewer.get("repo_context_max_chars_per_file", 1500)
+        loaded = {}
+        for path in candidate_files:
+            try:
+                content = self.git_provider.get_pr_file_content(path, branch)
+            except Exception:
+                content = ""
+            if content:
+                loaded[path] = content[:char_limit]
+                get_logger().debug(f"Loaded repo context file: {path} ({len(content)} chars)")
+        return loaded
 
     def parse_incremental(self, args: List[str]):
         is_incremental = False

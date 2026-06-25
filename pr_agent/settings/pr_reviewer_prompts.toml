@@ -111,6 +111,7 @@ class ContributionTimeCostEstimate(BaseModel):
 {%- endif %}
 
 class Review(BaseModel):
+    diff_analysis_notes: str = Field(description="MANDATORY FIRST STEP before identifying any issues. Scan through EVERY file that appears in the diff and write one line per file using this format: '<file_path>: <summary of what changed> | <initial concern or None>'. You MUST list every file. This step ensures no file is overlooked before the final findings are produced.")
 {%- if related_tickets %}
     ticket_compliance_check: List[TicketCompliance] = Field(description="A list of compliance checks for the related tickets")
 {%- endif %}
@@ -148,6 +149,10 @@ class PRReview(BaseModel):
 Example output:
 ```yaml
 review:
+  diff_analysis_notes: |
+    - src/auth/login.py: Added JWT refresh logic | Possible token expiry race condition on concurrent requests
+    - src/models/user.py: Minor field rename | None
+    - src/utils/cache.py: New cache invalidation path | Unclear behavior on cold start
 {%- if related_tickets %}
   ticket_compliance_check:
     - ticket_url: |
@@ -274,6 +279,18 @@ User answers:
 {%- endif %}
 
 
+{%- if repo_context %}
+
+Project context files (use these to apply project-specific conventions when reviewing):
+{%- for filename, content in repo_context.items() %}
+======
+{{ filename }}:
+{{ content|trim }}
+======
+{%- endfor %}
+{%- endif %}
+
+
 The PR code diff:
 ======
 {{ diff|trim }}
@@ -286,6 +303,10 @@ The PR code diff:
 Example output:
 ```yaml
 review:
+  diff_analysis_notes: |
+    - src/auth/login.py: Added JWT refresh logic | Possible token expiry race condition on concurrent requests
+    - src/models/user.py: Minor field rename | None
+    - src/utils/cache.py: New cache invalidation path | Unclear behavior on cold start
 {%- if related_tickets %}
   ticket_compliance_check:
     - ticket_url: |
