@@ -114,7 +114,7 @@ class PRReviewer:
         if not get_settings().pr_reviewer.get("load_repo_context", True):
             return {}
 
-        branch = self.git_provider.get_pr_branch()
+        branch = self.git_provider.pr.base.ref
         candidate_files = [
             "CLAUDE.md",
             ".claude/CLAUDE.md",
