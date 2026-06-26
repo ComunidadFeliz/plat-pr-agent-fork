@@ -281,7 +281,7 @@ User answers:
 
 {%- if repo_context %}
 
-Project context files (use these to apply project-specific conventions when reviewing):
+Project context (use this to inform your review — conventions, guidelines, and PR expectations for this repo):
 {%- for filename, content in repo_context.items() %}
 ======
 {{ filename }}:

@@ -110,27 +110,36 @@ class PRReviewer:
         )
 
     def _load_repo_context(self) -> dict:
-        """Read project convention files from the repo to inject as review context."""
-        if not get_settings().pr_reviewer.get("load_repo_context", True):
-            return {}
+        """Read project context files from the repo base branch to inject into the review prompt."""
+        try:
+            if not get_settings().pr_reviewer.get("load_repo_context", True):
+                return {}
 
-        branch = self.git_provider.pr.base.ref
-        candidate_files = [
-            "CLAUDE.md",
-            ".claude/CLAUDE.md",
-            ".github/pull_request_template.md",
-        ]
-        char_limit = get_settings().pr_reviewer.get("repo_context_max_chars_per_file", 1500)
-        loaded = {}
-        for path in candidate_files:
-            try:
-                content = self.git_provider.get_pr_file_content(path, branch)
-            except Exception:
-                content = ""
-            if content:
-                loaded[path] = content[:char_limit]
-                get_logger().debug(f"Loaded repo context file: {path} ({len(content)} chars)")
-        return loaded
+            pr = getattr(self.git_provider, 'pr', None)
+            branch = getattr(getattr(pr, 'base', None), 'ref', None)
+            if not branch:
+                return {}
+
+            candidate_files = [
+                "CLAUDE.md",
+                ".claude/CLAUDE.md",
+                ".github/pull_request_template.md",
+            ]
+            char_limit = get_settings().pr_reviewer.get("repo_context_max_chars_per_file", 1500)
+            loaded = {}
+            for path in candidate_files:
+                try:
+                    content = self.git_provider.get_pr_file_content(path, branch)
+                except Exception:
+                    content = ""
+                if content:
+                    if len(content) > char_limit:
+                        content = content[:char_limit].rsplit('\n', 1)[0] + "\n... [truncated]"
+                    loaded[path] = content
+                    get_logger().debug(f"Loaded repo context file: {path} ({len(content)} chars)")
+            return loaded
+        except Exception:
+            return {}
 
     def parse_incremental(self, args: List[str]):
         is_incremental = False
