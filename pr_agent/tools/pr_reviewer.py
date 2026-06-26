@@ -119,12 +119,6 @@ class PRReviewer:
             "CLAUDE.md",
             ".claude/CLAUDE.md",
             ".github/pull_request_template.md",
-            ".rubocop.yml",
-            ".eslintrc.js",
-            ".eslintrc.json",
-            ".eslintrc.yml",
-            "eslint.config.js",
-            "eslint.config.mjs",
         ]
         char_limit = get_settings().pr_reviewer.get("repo_context_max_chars_per_file", 1500)
         loaded = {}
