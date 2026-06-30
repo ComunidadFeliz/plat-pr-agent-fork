@@ -89,6 +89,8 @@ publish_output_no_suggestions=true # Set to "false" if you only need the reviewe
 persistent_comment=true
 extra_instructions = ""
 num_max_findings = 3
+load_repo_context = true
+repo_context_max_chars_per_file = 1500
 final_update_message = true
 # review labels
 enable_review_labels_security=true
