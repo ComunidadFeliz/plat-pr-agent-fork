@@ -216,6 +216,13 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
 
 def extract_hunk_headers(match):
     res = list(match.groups())
+    # Per the unified diff spec, an omitted line count means 1 -- git elides ',1'
+    # and emits '@@ -N +N @@' whenever a hunk covers a single line. Defaulting those
+    # counts to 0 shifts the trailing-context slice in extend_patch by one line, which
+    # appends the original (pre-change) line to the hunk as if it were unchanged context.
+    for i in (1, 3):  # size1, size2
+        if res[i] is None:
+            res[i] = 1
     for i in range(len(res)):
         if res[i] is None:
             res[i] = 0
