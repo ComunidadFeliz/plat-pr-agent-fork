@@ -105,7 +105,38 @@ class TestExtendPatch:
         expected_output_no_dynamic_context = '\n@@ -7,4 +7,4 @@ def foo():\n     line(5)\n     line(6)\n     line(7)\n-    line(8)\n+    new_line(8)'
         assert actual_output3 == expected_output_no_dynamic_context
 
+    # Git elides the ',1' count for single-line hunks ('@@ -N +N @@'). Reading the omitted
+    # count as 0 shifted the trailing-context slice by one and appended the original
+    # (pre-change) line to the hunk as unchanged context -- a line that does not exist in
+    # the new file. See extract_hunk_headers.
+    def test_single_line_file_omitted_hunk_count(self):
+        original_file_str = '3.4.9\n'
+        patch_str = '@@ -1 +1 @@\n-3.4.9\n+3.4.10'
+        actual_output = extend_patch(original_file_str, patch_str,
+                                     patch_extra_lines_before=3, patch_extra_lines_after=1,
+                                     filename='.ruby-version', new_file_str='3.4.10\n')
+        # The only line of the new file is the added one; nothing may follow it.
+        assert actual_output == '\n@@ -1,1 +1,1 @@ \n-3.4.9\n+3.4.10'
 
+    def test_omitted_hunk_count_trailing_context_is_correct_line(self):
+        original_file_str = 'a\nb\nc\nd\ne'
+        new_file_str = 'a\nb\nX\nd\ne'
+        patch_str = '@@ -3 +3 @@\n-c\n+X'
+        actual_output = extend_patch(original_file_str, patch_str,
+                                     patch_extra_lines_before=2, patch_extra_lines_after=1,
+                                     filename='f.py', new_file_str=new_file_str)
+        # Trailing context must be 'd' (the line after the change), not 'c' (the replaced line).
+        assert actual_output.endswith('\n d')
+        assert not actual_output.endswith('\n c')
+
+    def test_omitted_hunk_count_matches_explicit_count(self):
+        original_file_str = 'a\nb\nc\nd\ne'
+        new_file_str = 'a\nb\nX\nd\ne'
+        kwargs = dict(patch_extra_lines_before=2, patch_extra_lines_after=1,
+                      filename='f.py', new_file_str=new_file_str)
+        omitted = extend_patch(original_file_str, '@@ -3 +3 @@\n-c\n+X', **kwargs)
+        explicit = extend_patch(original_file_str, '@@ -3,1 +3,1 @@\n-c\n+X', **kwargs)
+        assert omitted == explicit
 
 
 
