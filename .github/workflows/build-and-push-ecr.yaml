@@ -24,7 +24,8 @@ env:
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}    # Variable del repo, ej. plat-pr-agent
 
 concurrency:                    # evita que dos pushes a main peleen por :latest
-  group: build-push-ecr
+  # Per-ref: a branch build must not cancel the main build that publishes :latest.
+  group: build-push-ecr-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -46,14 +47,30 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Only main moves :latest -- that tag is what EVERY consumer pulls on every
+      # review run, so a manual dispatch from a branch must never touch it. Branch
+      # builds publish the per-sha tag only, so a single repo can be pointed at it
+      # (CODE_REVIEW_IMAGE_TAG) to validate an engine change before rolling it out.
+      - name: Resolve image tags
+        id: tags
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$ECR_REPOSITORY"
+          tags="$image:$GITHUB_SHA"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            tags="$tags"$'\n'"$image:latest"
+          fi
+          { echo "tags<<EOF"; echo "$tags"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          echo "tags to publish:"; echo "$tags"
+
       - name: Build & push (con cache)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.github_action     # el que compila desde fuente (PR #2)
           push: true
-          tags: |
-            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
