@@ -297,16 +297,6 @@ User answers:
 {%- endif %}
 
 
-{%- if repo_context %}
-
-Project context (use this to inform your review — conventions, guidelines, and PR expectations for this repo):
-{%- for filename, content in repo_context.items() %}
-======
-{{ filename }}:
-{{ content|trim }}
-======
-{%- endfor %}
-{%- endif %}
 
 
 The PR code diff:
