@@ -24,7 +24,9 @@ from pydantic import BaseModel
 from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
-from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
+from pr_agent.algo.git_patch_processing import (extract_hunk_headers,
+                                                extract_hunk_lines_from_patch)
+from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
@@ -64,6 +66,7 @@ class PRReviewHeader(str, Enum):
 
 
 class ReasoningEffort(str, Enum):
+    MAX = "max"
     XHIGH = "xhigh"
     HIGH = "high"
     MEDIUM = "medium"
@@ -123,6 +126,16 @@ def unique_strings(input_list: List[str]) -> List[str]:
             unique_list.append(item)
             seen.add(item)
     return unique_list
+
+
+def _expand_minute_suffix(text: str) -> str:
+    """Replace minute abbreviations like '30m' with '30 minutes'.
+
+    Only replaces when 'm' appears at a word boundary after digits
+    (e.g. "30m" -> "30 minutes"), leaving partial-unit strings like
+    "30ms" or "30min" unchanged.
+    """
+    return re.sub(r'(\d+)m\b', r'\1 minutes', text)
 
 
 def convert_to_markdown_v2(output_data: dict,
@@ -215,11 +228,17 @@ def convert_to_markdown_v2(output_data: dict,
         elif 'contribution time cost estimate' in key_nice.lower():
             if gfm_supported:
                 markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
-                markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}"
+                best = _expand_minute_suffix(value['best_case'])
+                avg = _expand_minute_suffix(value['average_case'])
+                worst = _expand_minute_suffix(value['worst_case'])
+                markdown_text += f"{best} | {avg} | {worst}"
                 markdown_text += f"</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Contribution time estimate (best, average, worst case): "
-                markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}\n\n"
+                best = _expand_minute_suffix(value['best_case'])
+                avg = _expand_minute_suffix(value['average_case'])
+                worst = _expand_minute_suffix(value['worst_case'])
+                markdown_text += f"{best} | {avg} | {worst}\n\n"
         elif 'security concerns' in key_nice.lower():
             if gfm_supported:
                 markdown_text += f"<tr><td>"
@@ -383,7 +402,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 requires_further_human_verification = ticket_analysis.get('requires_further_human_verification',
                                                                           '').strip()
 
-                if not fully_compliant_str and not not_compliant_str:
+                if not fully_compliant_str and not not_compliant_str and not requires_further_human_verification:
                     get_logger().debug(f"Ticket compliance has no requirements",
                                        artifact={'ticket_url': ticket_url})
                     continue
@@ -399,6 +418,8 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                             ticket_compliance_level = 'PR Code Verified'
                 elif not_compliant_str:
                     ticket_compliance_level = 'Not compliant'
+                elif requires_further_human_verification:
+                    ticket_compliance_level = 'PR Code Verified'
 
                 # Store the compliance level for aggregation
                 if ticket_compliance_level:
@@ -1148,7 +1169,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
+                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1170,7 +1191,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
+                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1185,7 +1206,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            start1, size1, start2, size2 = map(int, match.groups()[:4])
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                         elif not line.startswith('-'):
                             delta += 1
 
@@ -1275,27 +1296,59 @@ def github_action_output(output_data: dict, key_name: str):
 def show_relevant_configurations(relevant_section: str) -> str:
     skip_keys = ['ai_disclaimer', 'ai_disclaimer_title', 'ANALYTICS_FOLDER', 'secret_provider', "skip_keys", "app_id", "redirect",
                       'trial_prefix_message', 'no_eligible_message', 'identity_provider', 'ALLOWED_REPOS','APP_NAME']
-    extra_skip_keys = get_settings().config.get('config.skip_keys', [])
+    extra_skip_keys = get_settings().config.get("skip_keys", [])
     if extra_skip_keys:
         skip_keys.extend(extra_skip_keys)
+    skip_keys_lower = [str(key).lower() for key in skip_keys]
 
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text +="<br>These are the relevant [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) for this tool:\n\n"
     markdown_text += f"**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
-        if key in skip_keys:
+        if key.lower() in skip_keys_lower:
             continue
         markdown_text += f"{key}: {value}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
-        if key in skip_keys:
+        if key.lower() in skip_keys_lower:
             continue
         markdown_text += f"{key}: {value}\n"
     markdown_text += "\n```"
     markdown_text += "\n</details>\n"
     return markdown_text
+
+
+def show_run_details(gfm_supported: bool) -> str:
+    """Render the opt-in run-details section (model, tokens, time cost, AI calls).
+
+    Falls back to a plain, non-collapsible section when the provider does not
+    support GitHub-flavored markdown, so the information stays visible.
+    """
+    details = get_run_details()
+    if details is None or not details.model_used:
+        return ""
+
+    title = "⚙️ Agent run details"
+    lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+    if details.has_token_usage:
+        # A counter still at zero after a successful call means the provider never
+        # reported that component, so drop it instead of claiming it was zero.
+        counts = [(details.prompt_tokens, "in"), (details.completion_tokens, "out"),
+                  (details.total_tokens, "total")]
+        reported = [f"{value:,} {label}" for value, label in counts if value]
+        lines.append(f"- Tokens: {' / '.join(reported)}")
+    lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
+    if details.num_ai_calls:
+        lines.append(f"- AI calls: {details.num_ai_calls}")
+    body = "\n".join(lines)
+
+    if gfm_supported:
+        return (f"\n<hr>\n<details> <summary><strong>{title}</strong></summary>\n\n"
+                f"{body}\n\n</details>\n")
+    return f"\n___\n\n**{title}**\n\n{body}\n"
+
 
 def is_value_no(value):
     if not value:
