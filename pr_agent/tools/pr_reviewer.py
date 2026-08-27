@@ -17,6 +17,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
 )
 from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.finding_verification import verify_findings
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
@@ -112,6 +113,7 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
+        self._refuted_headers = []
         self.prediction = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
@@ -217,6 +219,8 @@ class PRReviewer:
                 self.git_provider.remove_initial_comment()
                 return None
 
+            await self._verify_findings()
+
             pr_review = self._prepare_pr_review()
             get_logger().debug(f"PR output", artifact=pr_review)
 
@@ -299,6 +303,29 @@ class PRReviewer:
         return response
 
 
+
+    async def _verify_findings(self) -> None:
+        """Second pass: try to refute each finding against the code it names, before publishing.
+
+        Opt-in (`pr_reviewer.verify_findings`) because it costs one extra model call per PR. Never
+        raises and never removes a finding on its own: it only records which headers came back
+        refuted WITH cited evidence, and `_prepare_pr_review` drops those.
+        """
+        self._refuted_headers = []
+        if not get_settings().pr_reviewer.get("verify_findings", False):
+            return
+        try:
+            data = load_yaml(self.prediction.strip()) or {}
+            findings = [f for f in ((data.get('review') or {}).get('key_issues_to_review') or [])
+                        if isinstance(f, dict)]
+            if not findings:
+                return
+            model = get_settings().config.model
+            self._refuted_headers = await verify_findings(self.ai_handler, self.git_provider, findings, model)
+        except Exception as e:
+            get_logger().warning(f"finding verification skipped: {e}")
+            self._refuted_headers = []
+
     def _drop_unfalsifiable_findings(self, review: dict) -> None:
         """Keep only findings that state a concrete failure, and fold that statement into the body.
 
@@ -361,6 +388,16 @@ class PRReviewer:
             return ""
 
         self._drop_unfalsifiable_findings(data['review'])
+
+        # getattr: hay tests (y llamadores) que construyen el objeto sin pasar por __init__.
+        refuted = getattr(self, "_refuted_headers", None)
+        if refuted:
+            findings = data['review'].get('key_issues_to_review')
+            if isinstance(findings, list):
+                data['review']['key_issues_to_review'] = [
+                    f for f in findings
+                    if not (isinstance(f, dict)
+                            and str(f.get('issue_header') or '').strip() in refuted)]
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:

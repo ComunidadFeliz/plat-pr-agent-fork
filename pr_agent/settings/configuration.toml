@@ -114,6 +114,11 @@ num_max_findings = 3
 # the reader to verify something, or a text that concludes there is no defect. What is dropped
 # is logged. Set to false to publish the raw model output.
 drop_unfalsifiable_findings = true
+# Second pass that tries to REFUTE each finding against the code it names before publishing it,
+# dropping only the ones refuted with cited evidence. Costs one extra model call per PR with
+# findings. Off by default: the caller decides, so it can be A/B'd without rebuilding the image.
+verify_findings = false
+verify_findings_max_evidence_chars = 26000
 final_update_message = true
 # review labels
 enable_review_labels_security=true
