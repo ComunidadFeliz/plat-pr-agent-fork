@@ -38,6 +38,41 @@ from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
 
 MAX_REVIEW_COVERAGE_FILES = 50
+
+# A finding that does not assert a defect is not a finding. Two shapes show up in practice, and
+# every 👎 we have collected is one of them: the model concludes there is no real problem and
+# reports it anyway, or it hands the reader a verification task instead of a failure. Measured on
+# 11 real PRs: 10 of 11 published findings did not survive a check against the code, and every one
+# of those was one of these two shapes. Patterns cover es-CL and en-US -- config.response_language
+# decides which one the model writes in.
+# Auto-refutación inequívoca: el hallazgo dice que no hay defecto. Se busca en todo el hallazgo.
+_SELF_REFUTING_RE = re.compile(
+    r"no hay (?:regresi[oó]n|problema|bug|riesgo|defecto|contradicci[oó]n|impacto)"
+    r"|no (?:representa|implica) (?:un|ning[uú]n) (?:problema|riesgo|defecto)"
+    r"|es inofensiv|resulta inofensiv"
+    r"|no (?:es|constituye) un (?:problema|defecto|bug)"
+    r"|(?:is|are) harmless|no (?:real|actual) (?:regression|bug|issue|defect|problem)"
+    r"|not (?:an|a real) issue",
+    re.IGNORECASE)
+# NO se filtra por frases del tipo "comportamiento esperado/correcto" ni "ya está manejado".
+# Se probó y da falsos positivos en las dos direcciones: un hallazgo legítimo las usa para
+# DESCRIBIR el código que denuncia ("el spec documenta como comportamiento esperado que el
+# controller responda con redirect exitoso" es el hallazgo) o para describir el comportamiento
+# correcto que todavía no existe. Un filtro que borra hallazgos verdaderos en silencio es peor
+# que el ruido que evita: esa familia la resuelve el pase de falsificación, no una keyword.
+_ASKS_TO_VERIFY_RE = re.compile(
+    r"conviene (?:confirmar|verificar|revisar|validar|chequear)"
+    r"|vale (?:la pena )?(?:confirmar|verificar|revisar|validar)"
+    r"|habr[ií]a que (?:confirmar|verificar|revisar|validar)"
+    r"|ser[ií]a (?:bueno|prudente) (?:confirmar|verificar|revisar)"
+    r"|(?:confirmar|verificar|validar|chequear) (?:que|si|el|la|los|las)"
+    r"|no (?:es posible|se puede|puedo|podemos) (?:confirmar|verificar|determinar)"
+    r"|no (?:se ve|est[aá]|aparece) en el diff"
+    r"|(?:worth|should|please) (?:confirming|verifying|checking|confirm|verify|check)"
+    r"|(?:cannot|can not|can\'t|unable to) (?:confirm|verify|determine)"
+    r"|not (?:visible|included) in the diff|make sure (?:that|the)",
+    re.IGNORECASE)
+_PLACEHOLDER_SCENARIO = {"", "...", "n/a", "na", "none", "no", "no aplica", "-", "tbd"}
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
 
 
@@ -263,6 +298,51 @@ class PRReviewer:
 
         return response
 
+
+    def _drop_unfalsifiable_findings(self, review: dict) -> None:
+        """Keep only findings that state a concrete failure, and fold that statement into the body.
+
+        Drops three shapes: no failure_scenario at all, a scenario that is really a request for the
+        reader to go and verify something, and a finding whose own text concludes there is no
+        defect. What gets dropped is logged -- a silent filter would read as "nothing was found".
+        """
+        if not get_settings().pr_reviewer.get("drop_unfalsifiable_findings", True):
+            return
+        findings = review.get('key_issues_to_review')
+        if not isinstance(findings, list) or not findings:
+            return
+
+        kept, dropped = [], []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                kept.append(finding)
+                continue
+            scenario = str(finding.get('failure_scenario') or '').strip()
+            body = str(finding.get('issue_content') or '')
+            header = str(finding.get('issue_header') or '').strip()
+            reason = None
+            if scenario.strip('.').lower() in _PLACEHOLDER_SCENARIO:
+                reason = "sin failure_scenario"
+            elif _ASKS_TO_VERIFY_RE.search(scenario):
+                reason = "el failure_scenario pide verificar, no afirma una falla"
+            elif _SELF_REFUTING_RE.search(scenario) or _SELF_REFUTING_RE.search(body):
+                reason = "el propio texto concluye que no hay defecto"
+            if reason:
+                dropped.append({"issue_header": header, "reason": reason})
+                continue
+            # El escenario es la parte util para el reviewer humano: va al cuerpo, y la clave se
+            # saca para no cambiar el contrato del renderer.
+            if scenario and scenario not in body:
+                finding['issue_content'] = f"{body.rstrip()}\n\n**Cómo falla:** {scenario}".lstrip()
+            finding.pop('failure_scenario', None)
+            kept.append(finding)
+
+        if dropped:
+            get_logger().info(
+                f"Dropped {len(dropped)} of {len(findings)} findings: no falsifiable failure stated",
+                artifact={"dropped": dropped})
+        review['key_issues_to_review'] = kept
+
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
@@ -279,6 +359,8 @@ class PRReviewer:
         if 'review' not in data:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+
+        self._drop_unfalsifiable_findings(data['review'])
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:

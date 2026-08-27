@@ -110,6 +110,10 @@ persistent_comment=true
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
+# Drop findings that state no concrete failure: no failure_scenario, a scenario that only asks
+# the reader to verify something, or a text that concludes there is no defect. What is dropped
+# is logged. Set to false to publish the raw model output.
+drop_unfalsifiable_findings = true
 final_update_message = true
 # review labels
 enable_review_labels_security=true
