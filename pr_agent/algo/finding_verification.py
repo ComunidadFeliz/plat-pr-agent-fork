@@ -20,6 +20,7 @@ import asyncio
 import copy
 import json
 import re
+from itertools import islice
 
 from jinja2 import Environment, StrictUndefined
 
@@ -88,8 +89,11 @@ def _search_symbol(git_provider, symbol: str) -> list:
     if client is None or not repo_name:
         return []
     try:
-        results = client.search_code(f"{symbol} repo:{repo_name}")
-        return [item.path for item in results[:2]]
+        # islice, no `results[:2]`: PyGithub levanta IndexError al slicear un PaginatedList que
+        # vuelve vacío, y la búsqueda de código vuelve vacía todo el tiempo (símbolo que no está
+        # indexado, repo grande, rate limit). Visto en el e2e del sandbox: cada símbolo dejaba un
+        # "list index out of range" y este canal de evidencia quedaba muerto en silencio.
+        return [item.path for item in islice(client.search_code(f"{symbol} repo:{repo_name}"), 2)]
     except Exception as e:
         get_logger().debug(f"finding verification: code search for '{symbol}' unavailable: {e}")
         return []

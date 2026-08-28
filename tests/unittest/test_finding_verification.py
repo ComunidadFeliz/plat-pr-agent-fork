@@ -153,3 +153,30 @@ def test_sin_hallazgos_no_llama_al_modelo():
     handler = SimpleNamespace(chat_completion=AsyncMock())
     assert asyncio.run(fv.verify_findings(handler, _Provider(), [], "modelo")) == []
     handler.chat_completion.assert_not_called()
+
+
+# --------------------------------------------------------------------------- búsqueda de símbolos
+
+class _PaginatedVacio:
+    """Imita a PyGithub: slicear un PaginatedList vacío levanta IndexError."""
+    def __getitem__(self, item):
+        raise IndexError("list index out of range")
+    def __iter__(self):
+        return iter([])
+
+
+def test_busqueda_de_simbolos_tolera_resultado_vacio():
+    """Regresión del e2e: `results[:2]` sobre un PaginatedList vacío mataba el canal de evidencia."""
+    provider = SimpleNamespace(github_client=SimpleNamespace(search_code=lambda q: _PaginatedVacio()),
+                               repo="org/repo")
+    assert fv._search_symbol(provider, "notify_upcoming_to_residents") == []
+
+
+def test_busqueda_de_simbolos_devuelve_hasta_dos_paths():
+    hits = [SimpleNamespace(path=f"app/f{i}.rb") for i in range(5)]
+    provider = SimpleNamespace(github_client=SimpleNamespace(search_code=lambda q: hits), repo="org/repo")
+    assert fv._search_symbol(provider, "algo") == ["app/f0.rb", "app/f1.rb"]
+
+
+def test_sin_cliente_de_github_no_busca():
+    assert fv._search_symbol(SimpleNamespace(github_client=None, repo="org/repo"), "algo") == []
