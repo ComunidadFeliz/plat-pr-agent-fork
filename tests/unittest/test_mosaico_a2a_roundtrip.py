@@ -63,6 +63,7 @@ review:
     - relevant_file: foo.py
       issue_header: '{_MARKER}'
       issue_content: 'x changed from 1 to 2'
+      failure_scenario: 'calling foo() after the change returns 2 where callers expect 1'
       start_line: 1
       end_line: 1
   security_concerns: 'No'
