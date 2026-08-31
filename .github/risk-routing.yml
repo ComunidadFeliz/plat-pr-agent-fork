@@ -1,0 +1,25 @@
+# Política de risk-routing propia del repo. Se MERGEA con los defaults centrales
+# del hub (el consumidor gana). Las actions y los pisos por lenguaje ya vienen del
+# hub; acá va SOLO lo propio de este repo.
+#
+# Floor determinista por rutas modificadas. Gana el primer match (más específico
+# primero). Globs estilo fnmatch. Descomenta y ajusta a las rutas de riesgo reales:
+path_floor:
+  # Prompts y configuracion del motor: los lee cada review de la empresa, y un
+  # cambio ahi se propaga a los 21 repos consumidores apenas se publica la imagen.
+  - { severity: high,   paths: ["pr_agent/settings/*"] }
+  - { severity: medium, paths: ["pr_agent/algo/*", "pr_agent/git_providers/*", "pr_agent/tools/*"] }
+#   - { severity: high,   paths: ["app/models/payment.rb", "app/controllers/payments_controller.rb"] }
+#   - { severity: medium, paths: ["app/models/user.rb"] }
+
+# Rutas excluidas del path-floor (no aportan severity ni fuerzan validación por ruta).
+exclude: []
+
+# Team notificado cuando un riesgo no tiene ruta con dueño. OBLIGATORIO en el consumidor.
+default_team: "ComunidadFeliz/plataforma"
+
+# Notificaciones de Slack (opcional). Requiere el secret PR_AGENT_SLACK_BOT_TOKEN y que
+# el bot esté en el canal. Si se omite `slack`, no se notifica.
+# slack:
+#   channel: "C0XXXXXXXX"
+#   users: {}

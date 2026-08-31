@@ -1,0 +1,27 @@
+# Caller companion solo para el GATE de human-validation, copiar en cada repo como
+# `.github/workflows/code-review-gate.yml` junto a code-review.yml.
+#
+#   gate (pull_request_review) -> SOLO-GATE: un approve/dismiss humano reevalúa el
+#                                 estado de human-validation para que el merge pueda desbloquearse.
+#                                 Sin solicitudes de reviewers, sin comentarios.
+#
+# Separado de code-review.yml así el gate solo existe en eventos de review, nunca
+# aparece como un job skipeado en las runs de apertura de PR.
+name: Code Review Gate
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+concurrency:
+  group: code-review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    permissions:
+      pull-requests: write
+      statuses: write
+      contents: read
+    uses: ComunidadFeliz/plat-code-review-agent/.github/workflows/risk-routing.yml@main
+    with:
+      project: plat-pr-agent-fork
+    secrets: inherit

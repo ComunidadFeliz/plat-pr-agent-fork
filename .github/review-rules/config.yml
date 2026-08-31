@@ -1,0 +1,14 @@
+# Configuración del proyecto — articula la cascada de reglas para este repo.
+# La lee el ensamblador del hub (plat-code-review-agent) en cada PR.
+
+project: plat-pr-agent-fork
+
+# Lenguajes del repo -> hereda languages/<lang>.md de la base del hub.
+languages: [python]
+
+# Niveles base que siempre hereda (calidad transversal).
+inherits: [global]
+
+overrides:
+  # IDs de reglas heredadas a desactivar en este proyecto (con justificación en el commit).
+  disable: []

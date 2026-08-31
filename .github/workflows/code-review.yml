@@ -1,0 +1,47 @@
+# Caller para la mitad de review + routing del flujo, copiar en cada repo como
+# `.github/workflows/code-review.yml`. No lleva lógica: solo `on:` y `uses:`.
+#
+#   review (pull_request / comentario `/review`) -> review de PR-Agent + triage de human-validation
+#                                                   + routing COMPLETO (asigna reviewers, comenta, gate)
+#
+# El routing va FUSIONADO dentro de pr-review.yml (mismo job `pr_agent`), corriendo después del
+# triage: comparte runner/gh/python con el review y no levanta dependencias dos veces. Por eso este
+# caller ya NO tiene un job `route` aparte. Un comentario `/review` corre todo el flujo. NOTA: las
+# runs de comando por comentario (issue_comment) usan el archivo de workflow de la default branch.
+# El GATE de human-validation (evento pull_request_review) vive en el companion code-review-gate.yml,
+# que sí invoca risk-routing.yml en modo solo-gate.
+name: Code Review
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+concurrency:
+  # Por PR y por tipo de evento, así un push nuevo reemplaza una run de review en curso.
+  # Non-/review comments get their own group so they never cancel or displace a review run.
+  group: code-review-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}-${{ github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/review') }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # pull_request: opened/reopened/ready (omite drafts y forks; SÍ revisa PR de bots).
+    # issue_comment: un comentario `/review` en un PR (omite comentarios de bots, evita loops).
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.sender.type != 'Bot' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/review'))
+    permissions:
+      id-token: write        # OIDC: el motor asume el rol AWS para bajar la imagen del ECR
+      contents: write
+      issues: write
+      pull-requests: write
+      statuses: write        # routing (fusionado en pr_agent): fija el commit status del gate
+      actions: read          # el job anidado pr_agent lo necesita para las métricas de run-count
+    uses: ComunidadFeliz/plat-code-review-agent/.github/workflows/pr-review.yml@main
+    with:
+      project: plat-pr-agent-fork   # nombre del proyecto, solo observabilidad
+    secrets: inherit   # propaga REVIEW_ROUTING_TOKEN (PAT repo + read:org) y PR_AGENT_SLACK_BOT_TOKEN si están

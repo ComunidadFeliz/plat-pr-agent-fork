@@ -1,0 +1,24 @@
+# Caller de métricas de reacciones, copiar en cada repo como
+# `.github/workflows/reaction-metrics.yml`. No lleva lógica: solo `on:` y `uses:`.
+#
+# Al CERRAR un PR (merge o cierre a secas) captura las reacciones 👍/👎 de los comentarios
+# automáticos del review y las pushea a Loki (Grafana). GitHub Actions no tiene un evento de
+# "reacción agregada": por eso se dispara al cierre y consulta las reacciones por API.
+name: Review Reaction Metrics
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  reactions:
+    # Sin guard de sender.type: las reacciones son feedback humano y deben capturarse aunque el
+    # PR lo cierre/mergee una automatización (auto-merge, Dependabot, etc.). No hay riesgo de
+    # loop acá (este workflow no genera eventos de PR).
+    permissions:
+      pull-requests: read
+      issues: read
+      contents: read
+    uses: ComunidadFeliz/plat-code-review-agent/.github/workflows/reaction-metrics.yml@main
+    with:
+      project: plat-pr-agent-fork   # nombre del proyecto, solo observabilidad
+    secrets: inherit            # propaga LOKI_* (y HUB_REPO_TOKEN si el hub es privado)

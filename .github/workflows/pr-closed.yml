@@ -1,0 +1,23 @@
+# Caller companion para la métrica code_review.pr_closed (Métricas v1 · Paso 2), copiar en cada
+# repo como `.github/workflows/pr-closed.yml` junto a code-review.yml.
+#
+#   pr_closed (pull_request: closed) -> emite el outcome del PR (merged + resolución de
+#                                       escalamiento) para la métrica de override.
+#
+# Caller APARTE (como code-review-gate.yml) así no aparece como job skipeado en las runs de
+# apertura de PR. No llama al LLM; es determinista y best-effort (nunca rompe nada).
+name: Code Review — PR closed
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  pr_closed:
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    uses: ComunidadFeliz/plat-code-review-agent/.github/workflows/pr-closed.yml@main
+    with:
+      project: plat-pr-agent-fork   # reemplazar con el nombre del repo (para pr_id/project del evento)
+    secrets: inherit
