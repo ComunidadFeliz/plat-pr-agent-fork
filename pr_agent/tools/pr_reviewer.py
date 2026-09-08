@@ -1,5 +1,7 @@
 import copy
 import datetime
+import json
+import os
 import re
 from functools import partial
 from typing import List, Optional, Tuple
@@ -75,6 +77,26 @@ _ASKS_TO_VERIFY_RE = re.compile(
     re.IGNORECASE)
 _PLACEHOLDER_SCENARIO = {"", "...", "n/a", "na", "none", "no", "no aplica", "-", "tbd"}
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
+
+
+def _as_id_list(value):
+    """`rule_ids` normalized to a list of strings. The model may return a list, a bare
+    string, or nothing; the consumer should not have to handle all three."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _as_int(value):
+    """An int, or None. The model's YAML sometimes yields '12' or '...' instead of 12."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class PRReviewer:
@@ -370,6 +392,64 @@ class PRReviewer:
                 artifact={"dropped": dropped})
         review['key_issues_to_review'] = kept
 
+    # Findings artifact contract. BUMP the version for any change a consumer cannot absorb
+    # (renaming or removing a key, changing its meaning); adding a key does not bump it. The
+    # consumer MUST reject a version it does not know rather than carry on parsing:
+    # see tests/unittest/test_findings_artifact.py.
+    FINDINGS_SCHEMA_VERSION = 2
+
+    def _emit_findings_artifact(self, review: dict) -> None:
+        """Write the final findings as JSON to FINDINGS_FILE, when it is set.
+
+        This exists so a later step in the same job (the human-validation gate) does not
+        have to scrape the comment's markdown: prose is a rendering, not a contract, and it
+        changes whenever the template does.
+
+        Best-effort, like llm_usage: a failure here NEVER breaks the review. But the consumer
+        must be able to tell THREE states apart, not two -- there are findings, there are zero
+        findings, or the file could not be read. That is why the file is always written in
+        full (with `findings: []` when there are none) and carries `schema_version`: a missing
+        or unreadable file means "unknown", never "nothing found".
+
+        Keys are projected one by one on purpose. With `**finding`, an upstream rename would
+        change the payload silently; this way a key that disappears arrives as null and shows.
+        """
+        path = os.getenv("FINDINGS_FILE")
+        if not path:
+            return
+        try:
+            raw = review.get('key_issues_to_review')
+            findings = [
+                {
+                    "issue_header": f.get('issue_header'),
+                    "issue_content": f.get('issue_content'),
+                    "relevant_file": f.get('relevant_file'),
+                    "relevant_line": f.get('relevant_line'),
+                    # The violated rules as DATA. The consumer used to dig them out of the
+                    # prose with a regex, which failed whenever the model described the
+                    # problem without naming the id (measured: 14% of findings). With the
+                    # field in the schema, stating it stops being optional.
+                    "rule_ids": _as_id_list(f.get('rule_ids')),
+                    # The line NUMBER, not its text: without it the consumer cannot anchor a
+                    # comment where it belongs and falls back to the top of the file.
+                    "start_line": _as_int(f.get('start_line')),
+                    "end_line": _as_int(f.get('end_line')),
+                }
+                for f in (raw if isinstance(raw, list) else [])
+                if isinstance(f, dict)
+            ]
+            payload = {
+                "event": "review_findings",
+                "schema_version": self.FINDINGS_SCHEMA_VERSION,
+                "model": get_settings().config.model,
+                "findings": findings,
+            }
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+            get_logger().info(f"review_findings: {len(findings)} finding(s) -> {path}")
+        except Exception as e:
+            get_logger().warning(f"Could not write review findings to {path}: {e}")
+
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
@@ -398,6 +478,10 @@ class PRReviewer:
                     f for f in findings
                     if not (isinstance(f, dict)
                             and str(f.get('issue_header') or '').strip() in refuted)]
+
+        # The final findings as JSON, so another step of the SAME job can consume them
+        # without scraping the markdown. Same pattern as LLM_USAGE_FILE.
+        self._emit_findings_artifact(data['review'])
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
