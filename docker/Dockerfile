@@ -1,6 +1,6 @@
 FROM python:3.12.13-slim AS base
 
-RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt upgrade -y && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ADD pyproject.toml .
