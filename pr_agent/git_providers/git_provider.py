@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
@@ -11,6 +12,48 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_GLOBAL_SETTINGS_CACHE: dict = {}
+_GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
+_GLOBAL_SETTINGS_CACHE_MAX_SIZE = 256
+# Only cache reasonably-sized settings blobs; a valid .pr_agent.toml is tiny. This bounds the
+# process-wide cache memory (256 entries x this) regardless of the much larger apply-time size cap.
+_GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES = 1024 * 1024
+
+
+def get_cached_global_settings(cache_key, fetch_fn):
+    """Return the org/group/workspace global .pr_agent.toml via a bounded TTL cache.
+
+    Global settings change rarely, so caching avoids a provider API lookup (and repeated
+    403/404 fallbacks) on every webhook event. Empty/"not found" results are cached too, to
+    prevent repeated failed lookups. Oversized values are returned but not cached (to bound
+    memory). Pass a falsy cache_key to bypass the cache.
+    """
+    def _fetch_safely():
+        # A transient/unexpected fetch failure must NOT be cached, so it is retried instead of
+        # disabling global settings for the whole TTL. fetch_fn returns "" for expected "not found".
+        try:
+            return fetch_fn(), True
+        except Exception as e:
+            get_logger().warning(f"Failed to load global settings, error: {e}")
+            return "", False
+
+    if not cache_key:
+        return _fetch_safely()[0]
+    now = time.monotonic()
+    entry = _GLOBAL_SETTINGS_CACHE.get(cache_key)
+    if entry is not None and entry[1] > now:
+        return entry[0]
+    value, cacheable = _fetch_safely()
+    if not cacheable:
+        return value
+    value_size = len(value) if isinstance(value, (bytes, str)) else 0
+    if value_size <= _GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES:
+        _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)
+        while len(_GLOBAL_SETTINGS_CACHE) > _GLOBAL_SETTINGS_CACHE_MAX_SIZE:
+            oldest_key = min(_GLOBAL_SETTINGS_CACHE, key=lambda k: _GLOBAL_SETTINGS_CACHE[k][1])
+            _GLOBAL_SETTINGS_CACHE.pop(oldest_key, None)
+    return value
 
 def get_git_ssl_env() -> dict[str, str]:
     """
@@ -75,6 +118,13 @@ class GitProvider(ABC):
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
         pass
+
+    def supports_incremental_kind(self, kind: str) -> bool:
+        """Whether `get_incremental_commits()` can scope an incremental run to `kind`
+        (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
+        incremental anchoring override this; the default is no support, so tools
+        fall back to a full run."""
+        return False
 
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
@@ -167,6 +217,9 @@ class GitProvider(ABC):
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str):
+        # pr_title may be None, which means "leave the existing title unchanged"
+        # and update only the description. Implementations must not write the
+        # title in that case.
         pass
 
     @abstractmethod
@@ -274,6 +327,9 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        return ""
+
     def get_workspace_name(self):
         return ""
 
@@ -291,18 +347,26 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
+    def should_publish_review_as_thread(self) -> bool:
+        return False
+
+    def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
+        pass
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        return self.publish_comment(pr_comment)
+                                   final_update_message=True,
+                                   as_thread: bool = False):
+        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     def publish_persistent_comment_full(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   as_thread: bool = False):
         try:
             prev_comments = list(self.get_issue_comments())
             for comment in prev_comments:
@@ -317,6 +381,14 @@ class GitProvider(ABC):
                     get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
                     # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
                     self.edit_comment(comment, pr_comment_updated)
+                    if as_thread:
+                        try:
+                            # Reopen the thread if it was resolved, so the developer revisits the updated review.
+                            self.unresolve_comment_thread(comment)
+                        except Exception as e:
+                            # The review was already updated in place; a reopen failure must not reach the
+                            # outer except, whose fallback publish would duplicate the review.
+                            get_logger().warning(f"Failed to reopen review thread: {e}")
                     if final_update_message:
                         return self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
@@ -324,7 +396,7 @@ class GitProvider(ABC):
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass
-        return self.publish_comment(pr_comment)
+        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     @abstractmethod
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):

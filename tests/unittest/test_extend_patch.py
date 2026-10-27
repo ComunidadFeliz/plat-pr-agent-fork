@@ -1,6 +1,8 @@
 import pytest
 
-from pr_agent.algo.git_patch_processing import extend_patch
+from pr_agent.algo.git_patch_processing import (RE_HUNK_HEADER, extend_patch,
+                                                extract_hunk_headers,
+                                                extract_hunk_lines_from_patch)
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_large_diff
@@ -105,7 +107,38 @@ class TestExtendPatch:
         expected_output_no_dynamic_context = '\n@@ -7,4 +7,4 @@ def foo():\n     line(5)\n     line(6)\n     line(7)\n-    line(8)\n+    new_line(8)'
         assert actual_output3 == expected_output_no_dynamic_context
 
+    # Git elides the ',1' count for single-line hunks ('@@ -N +N @@'). Reading the omitted
+    # count as 0 shifted the trailing-context slice by one and appended the original
+    # (pre-change) line to the hunk as unchanged context -- a line that does not exist in
+    # the new file. See extract_hunk_headers.
+    def test_single_line_file_omitted_hunk_count(self):
+        original_file_str = '3.4.9\n'
+        patch_str = '@@ -1 +1 @@\n-3.4.9\n+3.4.10'
+        actual_output = extend_patch(original_file_str, patch_str,
+                                     patch_extra_lines_before=3, patch_extra_lines_after=1,
+                                     filename='.ruby-version', new_file_str='3.4.10\n')
+        # The only line of the new file is the added one; nothing may follow it.
+        assert actual_output == '\n@@ -1,1 +1,1 @@ \n-3.4.9\n+3.4.10'
 
+    def test_omitted_hunk_count_trailing_context_is_correct_line(self):
+        original_file_str = 'a\nb\nc\nd\ne'
+        new_file_str = 'a\nb\nX\nd\ne'
+        patch_str = '@@ -3 +3 @@\n-c\n+X'
+        actual_output = extend_patch(original_file_str, patch_str,
+                                     patch_extra_lines_before=2, patch_extra_lines_after=1,
+                                     filename='f.py', new_file_str=new_file_str)
+        # Trailing context must be 'd' (the line after the change), not 'c' (the replaced line).
+        assert actual_output.endswith('\n d')
+        assert not actual_output.endswith('\n c')
+
+    def test_omitted_hunk_count_matches_explicit_count(self):
+        original_file_str = 'a\nb\nc\nd\ne'
+        new_file_str = 'a\nb\nX\nd\ne'
+        kwargs = dict(patch_extra_lines_before=2, patch_extra_lines_after=1,
+                      filename='f.py', new_file_str=new_file_str)
+        omitted = extend_patch(original_file_str, '@@ -3 +3 @@\n-c\n+X', **kwargs)
+        explicit = extend_patch(original_file_str, '@@ -3,1 +3,1 @@\n-c\n+X', **kwargs)
+        assert omitted == explicit
 
 
 
@@ -194,3 +227,30 @@ class TestLoadLargeDiff:
         assert load_large_diff("test.py", None, None) == ""
         assert (load_large_diff("test.py", "content\n", "") ==
                 '--- \n+++ \n@@ -1 +1 @@\n-\n+content\n')
+
+class TestOmittedHunkCount:
+    def test_omitted_count_is_parsed_as_one(self):
+        section_header, size1, size2, start1, start2 = extract_hunk_headers(
+            RE_HUNK_HEADER.match("@@ -1 +1 @@"))
+        assert (start1, size1, start2, size2) == (1, 1, 1, 1)
+
+    def test_omitted_count_on_one_side_only(self):
+        section_header, size1, size2, start1, start2 = extract_hunk_headers(
+            RE_HUNK_HEADER.match("@@ -10,7 +12 @@"))
+        assert (start1, size1, start2, size2) == (10, 7, 12, 1)
+
+    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self):
+        original = "".join(f"l{i}\n" for i in range(1, 9))
+        new = "CHANGED\n" + "".join(f"l{i}\n" for i in range(2, 9))
+        extended = extend_patch(original, "@@ -1 +1 @@\n-l1\n+CHANGED",
+                                patch_extra_lines_before=0, patch_extra_lines_after=3,
+                                filename="m.py", new_file_str=new)
+        assert "\n l1" not in extended
+        for expected in (" l2", " l3", " l4"):
+            assert expected in extended
+
+    def test_hunk_line_range_excludes_the_line_after_the_hunk(self):
+        patch = ("@@ -10,1 +12 @@\n-old\n+only_line\n"
+                 "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
+        full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
+        assert "@@ -10,1 +12 @@" not in full
