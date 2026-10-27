@@ -25,7 +25,8 @@ _CALLBACK_ATTRS = ("callbacks", "success_callback", "failure_callback", "service
 
 
 def _discard_queued_logging_tasks():
-    # PLAT-553: litellm>=1.100 carries queued callbacks over to the next event loop, so a test's dropped callback would reach the next test's logger.
+    # PLAT-553: litellm>=1.100 carries queued callbacks over to the next event loop,
+    # so a test's dropped callback would reach the next test's logger.
     worker = _get_global_logging_worker()
     if worker is None or getattr(worker, "_queue", None) is None:
         return
