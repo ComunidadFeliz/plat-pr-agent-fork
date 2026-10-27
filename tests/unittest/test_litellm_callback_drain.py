@@ -15,12 +15,25 @@ import litellm
 import pytest
 
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    _is_litellm_task, drain_litellm_callbacks, litellm_callbacks_registered)
+    _get_global_logging_worker, _is_litellm_task, drain_litellm_callbacks,
+    litellm_callbacks_registered)
 from pr_agent.config_loader import global_settings
 from pr_agent.log import get_logger
 
 _CALLBACK_ATTRS = ("callbacks", "success_callback", "failure_callback", "service_callback",
                    "_async_success_callback", "_async_failure_callback")
+
+
+def _discard_queued_logging_tasks():
+    # PLAT-553: litellm>=1.100 carries queued callbacks over to the next event loop, so a test's dropped callback would reach the next test's logger.
+    worker = _get_global_logging_worker()
+    if worker is None or getattr(worker, "_queue", None) is None:
+        return
+    leftovers = list(worker._drain_pending(worker._queue)) if hasattr(worker, "_drain_pending") else []
+    leftovers += list(getattr(worker, "_dequeued_tasks", {}).values())
+    for task in leftovers:
+        task["coroutine"].close()
+    getattr(worker, "_dequeued_tasks", {}).clear()
 
 
 @pytest.fixture
@@ -33,6 +46,7 @@ def clean_litellm_callbacks():
             setattr(litellm, attr, [])
     global_settings.set("LITELLM.ENABLE_CALLBACKS", False)
     yield
+    _discard_queued_logging_tasks()
     for attr, value in snapshot.items():
         if value is not None:
             setattr(litellm, attr, value)
