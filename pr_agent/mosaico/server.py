@@ -69,7 +69,8 @@ def _configure_langfuse() -> None:
         return
     try:
         from langfuse import Langfuse
-        # PLAT-554: langfuse>=5 dropped blocked_instrumentation_scopes; its default span filter already skips a2a-python-sdk.
+        # PLAT-554: langfuse>=5 dropped blocked_instrumentation_scopes;
+        # its default span filter already skips a2a-python-sdk.
         Langfuse()
         get_logger().info("MOSAICO: Langfuse client initialised (a2a-python-sdk spans not exported).")
     except Exception as e:

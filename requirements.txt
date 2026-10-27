@@ -56,4 +56,4 @@ giteapy==1.0.8
 # langchain-openai==0.1.20
 msgpack==1.2.4  # transitive; pinned for Aikido (GHSA-6v7p-g79w-8964)
 urllib3==2.8.0  # transitive; pinned for Aikido (CVE-2026-97687, CVE-2026-97689)
-wrapt>=2.4.0
+wrapt==2.5.1  # transitive; pinned for Aikido (needs langfuse>=5)
